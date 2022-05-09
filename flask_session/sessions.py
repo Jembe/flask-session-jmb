@@ -166,12 +166,14 @@ class RedisSessionInterface(SessionInterface):
         if self.has_same_site_capability:
             conditional_cookie_kwargs["samesite"] = self.get_cookie_samesite(app)
         expires = self.get_expiration_time(app, session)
-        val = self.serializer.dumps(dict(session))
-        self.redis.setex(
-            name=self.key_prefix + session.sid,
-            value=val,
-            time=total_seconds(app.permanent_session_lifetime),
-        )
+        # update only when session is modified
+        if session.modified:
+            val = self.serializer.dumps(dict(session))
+            self.redis.setex(
+                name=self.key_prefix + session.sid,
+                value=val,
+                time=total_seconds(app.permanent_session_lifetime),
+            )
         if self.use_signer:
             session_id = self._get_signer(app).sign(want_bytes(session.sid))
         else:
@@ -295,15 +297,19 @@ class MemcachedSessionInterface(SessionInterface):
         if self.has_same_site_capability:
             conditional_cookie_kwargs["samesite"] = self.get_cookie_samesite(app)
         expires = self.get_expiration_time(app, session)
-        if not PY2:
-            val = self.serializer.dumps(dict(session), 0)
-        else:
-            val = self.serializer.dumps(dict(session))
-        self.client.set(
-            full_session_key,
-            val,
-            self._get_memcache_timeout(total_seconds(app.permanent_session_lifetime)),
-        )
+        if session.modified:
+            # update session if modified
+            if not PY2:
+                val = self.serializer.dumps(dict(session), 0)
+            else:
+                val = self.serializer.dumps(dict(session))
+            self.client.set(
+                full_session_key,
+                val,
+                self._get_memcache_timeout(
+                    total_seconds(app.permanent_session_lifetime)
+                ),
+            )
         if self.use_signer:
             session_id = self._get_signer(app).sign(want_bytes(session.sid))
         else:
@@ -386,12 +392,14 @@ class FileSystemSessionInterface(SessionInterface):
         if self.has_same_site_capability:
             conditional_cookie_kwargs["samesite"] = self.get_cookie_samesite(app)
         expires = self.get_expiration_time(app, session)
-        data = dict(session)
-        self.cache.set(
-            self.key_prefix + session.sid,
-            data,
-            total_seconds(app.permanent_session_lifetime),
-        )
+        if session.modified:
+            # update only if modified
+            data = dict(session)
+            self.cache.set(
+                self.key_prefix + session.sid,
+                data,
+                total_seconds(app.permanent_session_lifetime),
+            )
         if self.use_signer:
             session_id = self._get_signer(app).sign(want_bytes(session.sid))
         else:
@@ -488,12 +496,14 @@ class MongoDBSessionInterface(SessionInterface):
         if self.has_same_site_capability:
             conditional_cookie_kwargs["samesite"] = self.get_cookie_samesite(app)
         expires = self.get_expiration_time(app, session)
-        val = self.serializer.dumps(dict(session))
-        self.store.update_one(
-            {"id": store_id},
-            {"$set": {"id": store_id, "val": val, "expiration": expires}},
-            True,
-        )
+        if session.modified:
+            # update only if modified
+            val = self.serializer.dumps(dict(session))
+            self.store.update_one(
+                {"id": store_id},
+                {"$set": {"id": store_id, "val": val, "expiration": expires}},
+                True,
+            )
         if self.use_signer:
             session_id = self._get_signer(app).sign(want_bytes(session.sid))
         else:
@@ -615,9 +625,11 @@ class SqlAlchemySessionInterface(SessionInterface):
         expires = self.get_expiration_time(app, session)
         val = self.serializer.dumps(dict(session))
         if saved_session:
-            saved_session.data = val
-            saved_session.expiry = expires
-            self.db.session.commit()
+            if session.modified:
+                # update only if modified
+                saved_session.data = val
+                saved_session.expiry = expires
+                self.db.session.commit()
         else:
             new_session = self.sql_session_model(store_id, val, expires)
             self.db.session.add(new_session)
